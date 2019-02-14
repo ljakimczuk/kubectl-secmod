@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+declare -A secrets
+
+KUBECTL_EXTRA_ARGS=""
+
+_stty=$(stty -g < /dev/tty)
+
+get_list() {
+    SECRETS_LIST=$(kubectl get secret $KUBECTL_EXTRA_ARGS $1 -o jsonpath={.data})
+
+    # Remove heading 'map[' and trailing ']' from the string 
+    # and return space delimited array.
+
+    SECRETS_LIST=${SECRETS_LIST##"map["}
+    SECRETS_LIST=${SECRETS_LIST%%"]"}
+  
+    echo $SECRETS_LIST
+}
+
+populate_map() {
+    for i in $(get_list $1); do
+        # Make the associative array out of the Kubectl output
+        if [[ "${i}" =~ (.*):(.*) ]]
+        then
+            secrets+=( ["$(echo ${BASH_REMATCH[1]})"]=${BASH_REMATCH[2]} )
+        fi  
+    done 
+}
+
+edit_user_choice() {
+    choice=$(menu ${!secrets[@]})
+
+    echo ${secrets["${choice}"]} | base64 -d > /tmp/secret$$
+    vim /tmp/secret$$ >/dev/tty
+}
+
+menu() {
+    # Taken from the https://gist.github.com/DanielFGray/ab9801481f92e19b6e87321ede56c91e
+    local tput current hl items i keys
+
+    declare -A tput=(
+        [cuu1]=$(tput cuu1)       # up one line
+        [cud1]=$(tput cud1)       # down one line
+        [sgr0]=$(tput sgr0)       # reset color
+        [setaf_1]=$(tput setaf 1) # red
+        [setaf_2]=$(tput setaf 2) # green
+        [civis]=$(tput civis)     # hide cursor
+        [ed]=$(tput ed)           # erase down
+    )
+
+    printf '%s' "${tput[civis]}" > /dev/tty
+    current=0
+    hl=('  ' "> ${tput[setaf_2]}")
+
+    items=($@)
+
+    while :; do
+        for (( i = 0; i < ${#items[@]}; i++ )) do
+            printf '%s\n' "${hl[i==current]}${items[i]}${tput[sgr0]}" > /dev/tty
+        done
+
+        read -rsn1 keys < /dev/tty
+        case "$keys" in
+            j|J) (( current < ${#items[@]}-1 )) && (( current ++ )) ;;
+            k|K) (( current > 0 )) && (( current -- )) ;;
+        esac
+
+        for (( i = 0; i < ${#items[@]}; i++ )) do
+            printf '%s%s' "${tput[cuu1]}" "${tput[ed]}" > /dev/tty
+        done
+
+        if [[ -z "$keys" ]]; then
+            echo ${items[current]}
+            break
+        fi
+    done
+
+    tput cnorm > /dev/tty
+    stty "$_stty" <> /dev/tty
+}
+
+usage() {
+    echo -e "Edit Kubernetes Secrets.\n"
+    echo -e "Examples:"
+    echo -e "  # Edit Secret in the current namespace."
+    echo -e "  kubectl secmod secret123\n"
+    echo -e "  # Edit Secret in the given namespace."
+    echo -e "  kubectl secmod -n namespace123 secret123\n"
+    echo -e "Usage:"
+    echo -e "  kubectl secmod"
+    echo -e "[-n <NAMESPACE> | -h]\n"
+}
+
+NAMESPACE=""
+ARGS=""
+while [ $# -gt 0 ]
+do
+    unset OPTIND
+    unset OPTARG
+
+    while getopts :n:h options
+    do
+        case "$options" in 
+            n)
+                NAMESPACE="$OPTARG"
+                ;;                 
+            h | *)
+                usage
+                exit 0
+                ;;
+        esac
+    done
+    shift $(( OPTIND-1 ))
+    ARGS="${ARGS} $1 "
+    shift
+done
+            
+set -- $ARGS
+if [ -z "$1" ]
+then
+    echo "Secret name cannot be empty."
+    exit 2
+else
+    trap '[[ -e /tmp/secret$$ ]] && rm /tmp/secret$$' exit
+   
+    [[ "$NAMESPACE" != "" ]] && KUBECTL_EXTRA_ARGS="--namespace $NAMESPACE $namespace $KUBECTL_EXTRA_ARGS"
+    
+    populate_map $1 
+    edit_user_choice
+
+    # Eventually patch the secret with the new value.
+    kubectl patch secret $KUBECTL_EXTRA_ARGS $1 -p "{\"data\":{\"$(echo ${choice})\":\"$(([[ $(tail -c1 /tmp/secret$$ | wc -l) == 1 ]] && head -c -1 /tmp/secret$$ || cat /tmp/secret$$) | base64 -w 0)\"}}"
+
+fi
