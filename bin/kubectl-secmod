@@ -31,7 +31,14 @@ populate_map() {
 edit_user_choice() {
     choice=$(menu ${!secrets[@]})
 
-    echo ${secrets["${choice}"]} | base64 -d > /tmp/secret$$
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        echo ${secrets["${choice}"]} | base64 -D > /tmp/secret$$
+    else
+        # linux
+        echo ${secrets["${choice}"]} | base64 -d > /tmp/secret$$
+    fi
+
     vim /tmp/secret$$ >/dev/tty
 }
 
@@ -130,6 +137,12 @@ else
     edit_user_choice
 
     # Eventually patch the secret with the new value.
-    kubectl patch secret $KUBECTL_EXTRA_ARGS $1 -p "{\"data\":{\"$(echo ${choice})\":\"$(([[ $(tail -c1 /tmp/secret$$ | wc -l) == 1 ]] && head -c -1 /tmp/secret$$ || cat /tmp/secret$$) | base64 -w 0)\"}}"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        kubectl patch secret $KUBECTL_EXTRA_ARGS $1 -p "{\"data\":{\"$(echo ${choice})\":\"$(([[ $(tail -c1 /tmp/secret$$ | wc -l) == 1 ]] && head -c -1 /tmp/secret$$ || cat /tmp/secret$$) | base64 -b 0)\"}}"
+    else
+        # linux
+        kubectl patch secret $KUBECTL_EXTRA_ARGS $1 -p "{\"data\":{\"$(echo ${choice})\":\"$(([[ $(tail -c1 /tmp/secret$$ | wc -l) == 1 ]] && head -c -1 /tmp/secret$$ || cat /tmp/secret$$) | base64 -w 0)\"}}"
+    fi
 
 fi
